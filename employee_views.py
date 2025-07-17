@@ -10,8 +10,8 @@ from database import (
     get_health_admin_name,
     save_response,
     save_response_detail,
-    get_allowed_surveys,
-    get_survey_fields
+    get_survey_fields,
+    has_completed_survey_today
 )
 
 def show_employee_dashboard():
@@ -78,6 +78,9 @@ def display_employee_header(region_info: Dict):
     st.set_page_config(layout="wide")
     st.title(f"لوحة الموظف - {region_info['admin_name']}")
     
+    # الحصول على آخر وقت دخول من قاعدة البيانات
+    last_login = get_last_login(st.session_state.user_id)
+    
     col1, col2, col3 = st.columns(3)
     with col1:
         st.subheader("المحافظة")
@@ -87,8 +90,20 @@ def display_employee_header(region_info: Dict):
         st.info(region_info['admin_name'])
     with col3:
         st.subheader("آخر دخول")
-        st.info(st.session_state.get('last_login', 'غير معروف'))
-
+        st.info(last_login if last_login else "غير معروف")
+def get_last_login(user_id: int) -> Optional[str]:
+    """الحصول على آخر وقت دخول للمستخدم"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT last_login FROM Users WHERE user_id=?", (user_id,))
+        result = cursor.fetchone()
+        return result[0] if result and result[0] else None
+    except sqlite3.Error as e:
+        st.error(f"حدث خطأ في جلب وقت آخر دخول: {str(e)}")
+        return None
+    finally:
+        conn.close()
 def display_survey_selection(allowed_surveys: List[Tuple[int, str]]) -> List[int]:
     """عرض اختيار متعدد للاستبيانات وإرجاع القيم المحددة"""
     st.header("الاستبيانات المتاحة")
@@ -115,6 +130,11 @@ def display_single_survey(survey_id: int, region_id: int):
             st.error("الاستبيان المحدد غير موجود")
             return
             
+        # التحقق مما إذا كان المستخدم قد أكمل هذا الاستبيان اليوم
+        if has_completed_survey_today(st.session_state.user_id, survey_id):
+            st.warning(f"لقد أكملت استبيان '{survey_info[0]}' اليوم. يمكنك إكماله مرة أخرى غدًا.")
+            return
+            
         # عرض عنوان الاستبيان
         with st.expander(f"📋 {survey_info[0]} (تاريخ الإنشاء: {survey_info[1]})"):
             # الحصول على حقول الاستبيان
@@ -132,12 +152,7 @@ def display_survey_form(survey_id: int, region_id: int, fields: List[Tuple], sur
     """عرض نموذج استبيان مع خيارات الحفظ"""
     with st.form(f"survey_form_{survey_id}"):
         st.markdown("**يرجى تعبئة جميع الحقول المطلوبة (*)**")
-        
-        # قسم تحديد الموقع الجغرافي
-        location_section = st.container()
-        with location_section:
-            st.subheader("📍 الموقع الجغرافي")
-            latitude, longitude = get_geolocation()
+
         
         # قسم حقول الاستبيان
         st.subheader("🧾 بيانات الاستبيان")
@@ -159,33 +174,12 @@ def display_survey_form(survey_id: int, region_id: int, fields: List[Tuple], sur
                 region_id,
                 fields,
                 answers,
-                latitude,
-                longitude,
+                
                 submitted,
                 survey_name
             )
 
-def get_geolocation() -> Tuple[Optional[float], Optional[float]]:
-    """الحصول على الموقع الجغرافي"""
-    use_location = st.checkbox("تحديد الموقع الجغرافي تلقائياً", value=True)
-    
-    if use_location:
-        try:
-            g = geocoder.ip('me')
-            if g.latlng:
-                st.success(f"تم تحديد موقعك: {g.latlng[0]}, {g.latlng[1]}")
-                return g.latlng[0], g.latlng[1]
-        except Exception as e:
-            st.warning(f"تعذر تحديد الموقع تلقائياً: {str(e)}")
-    
-    # الخيار اليدوي إذا فشل التحديد التلقائي
-    col1, col2 = st.columns(2)
-    with col1:
-        lat = st.number_input("خط العرض", min_value=-90.0, max_value=90.0, value=0.0)
-    with col2:
-        lon = st.number_input("خط الطول", min_value=-180.0, max_value=180.0, value=0.0)
-    
-    return (lat, lon) if lat != 0.0 and lon != 0.0 else (None, None)
+
 
 def render_field(field_id: int, label: str, field_type: str, options: str, is_required: bool):
     """عرض حقل إدخال حسب نوعه"""
@@ -211,8 +205,6 @@ def process_survey_submission(
     region_id: int,
     fields: List[Tuple],
     answers: Dict[int, any],
-    latitude: Optional[float],
-    longitude: Optional[float],
     is_completed: bool,
     survey_name: str
 ):
@@ -224,14 +216,17 @@ def process_survey_submission(
         st.error(f"الحقول التالية مطلوبة: {', '.join(missing_fields)}")
         return
     
+    # التحقق مما إذا كان المستخدم قد أكمل هذا الاستبيان اليوم
+    if is_completed and has_completed_survey_today(st.session_state.user_id, survey_id):
+        st.error("لقد قمت بإكمال هذا الاستبيان اليوم بالفعل. يمكنك إكماله مرة أخرى غدًا.")
+        return
+    
     # حفظ الإجابات في قاعدة البيانات
     response_id = save_response(
         survey_id=survey_id,
         user_id=st.session_state.user_id,
         region_id=region_id,
-        is_completed=is_completed,
-        latitude=latitude,
-        longitude=longitude
+        is_completed=is_completed
     )
     
     if not response_id:
@@ -267,7 +262,6 @@ def show_submission_message(is_completed: bool, survey_name: str):
     """عرض رسالة نجاح حسب نوع الحفظ"""
     if is_completed:
         st.success(f"تم إرسال استبيان '{survey_name}' بنجاح")
-        st.balloons()
         
         # عرض معلومات الإرسال
         cols = st.columns(3)
@@ -276,3 +270,79 @@ def show_submission_message(is_completed: bool, survey_name: str):
         cols[2].info(f"حالة: مكتمل")
     else:
         st.success(f"تم حفظ مسودة استبيان '{survey_name}' بنجاح")
+def get_allowed_surveys(user_id: int) -> List[Tuple[int, str]]:
+    """الحصول على الاستبيانات المسموح بها للموظف"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT s.survey_id, s.survey_name 
+            FROM Surveys s
+            JOIN UserSurveys us ON s.survey_id = us.survey_id
+            WHERE us.user_id = ?
+            ORDER BY s.survey_name
+        ''', (user_id,))
+        return cursor.fetchall()
+    except sqlite3.Error as e:
+        st.error(f"حدث خطأ في جلب الاستبيانات المسموح بها: {str(e)}")
+        return []
+    finally:
+        conn.close()      
+def view_survey_responses(survey_id: int):
+    """عرض إجابات الاستبيان (للقراءة فقط للموظفين)"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    try:
+        # الحصول على معلومات الاستبيان
+        survey = conn.execute(
+            "SELECT survey_name FROM Surveys WHERE survey_id=?",
+            (survey_id,)
+        ).fetchone()
+        
+        st.subheader(f"إجابات استبيان {survey[0]} (عرض فقط)")
+        
+        # الحصول على إجابات الموظف فقط
+        responses = conn.execute('''
+            SELECT r.response_id, r.submission_date, r.is_completed
+            FROM Responses r
+            WHERE r.survey_id = ? AND r.user_id = ?
+            ORDER BY r.submission_date DESC
+        ''', (survey_id, st.session_state.user_id)).fetchall()
+        
+        if not responses:
+            st.info("لا توجد إجابات مسجلة لهذا الاستبيان")
+            return
+        
+        # عرض البيانات في جدول
+        df = pd.DataFrame(
+            [(r[0], r[1], "✔️" if r[2] else "✖️") 
+             for r in responses],
+            columns=["ID", "التاريخ", "الحالة"]
+        )
+        
+        st.dataframe(df, use_container_width=True)
+        
+        # عرض تفاصيل إجابة محددة (للقراءة فقط)
+        selected_response_id = st.selectbox(
+            "اختر إجابة لعرض تفاصيلها",
+            options=[r[0] for r in responses],
+            format_func=lambda x: f"إجابة #{x}"
+        )
+
+        if selected_response_id:
+            details = conn.execute('''
+                SELECT sf.field_label, rd.answer_value
+                FROM Response_Details rd
+                JOIN Survey_Fields sf ON rd.field_id = sf.field_id
+                WHERE rd.response_id = ?
+                ORDER BY sf.field_order
+            ''', (selected_response_id,)).fetchall()
+
+            st.subheader("تفاصيل الإجابة المحددة")
+            for field, answer in details:
+                st.write(f"**{field}:** {answer if answer else 'غير مدخل'}")
+    
+    except sqlite3.Error as e:
+        st.error(f"حدث خطأ في قاعدة البيانات: {str(e)}")
+    finally:
+        conn.close()        
+        
