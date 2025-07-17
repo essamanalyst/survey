@@ -13,9 +13,9 @@ def main():
     st.set_page_config(page_title="نظام إدارة الاستبيانات", page_icon="📋", layout="wide")
     
     # التحقق من حالة الجلسة
-    if authenticate(): 
+    if authenticate():  # إذا كان مسجل الدخول
         # تحديث وقت النشاط عند كل تفاعل
-        st.session_state.last_activity = datetime.now() 
+        st.session_state.last_activity = datetime.now()  # لن يظهر الخطأ الآن
         
         # عرض واجهة المستخدم حسب الدور
         user_role = get_user_role(st.session_state.user_id)
