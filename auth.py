@@ -1,17 +1,17 @@
 import streamlit as st
 import hashlib
 from datetime import datetime, timedelta
-from database import get_user_by_username, init_db, update_user_activity
+from database import get_user_by_username, update_last_login, init_db, update_user_activity
 
 def authenticate():
     # التحقق من وجود بيانات الجلسة وانتهاء المدة
     if 'authenticated' in st.session_state and st.session_state.authenticated:
         if 'last_activity' in st.session_state:
             if (datetime.now() - st.session_state.last_activity) < timedelta(hours=1):
-                st.session_state.last_activity = datetime.now() 
+                st.session_state.last_activity = datetime.now()  # تجديد النشاط
                 return True
             else:
-                logout()  
+                logout()  # انتهت مدة الجلسة
         else:
             st.session_state.last_activity = datetime.now()
             return True
@@ -34,6 +34,7 @@ def authenticate():
                 st.session_state.region_id = user['assigned_region']
                 st.session_state.last_activity = datetime.now()
                 st.session_state.login_time = datetime.now()
+                update_last_login(user['user_id'])
                 st.rerun()
                 return True
             else:
