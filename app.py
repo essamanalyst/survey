@@ -5,7 +5,8 @@ from admin_views import show_admin_dashboard
 from employee_views import show_employee_dashboard
 from database import init_db, get_user_role
 from governorate_admin_views import show_governorate_admin_dashboard
-
+import os
+port = int(os.environ.get("PORT", 8501))
 # تهيئة قاعدة البيانات
 init_db()
 
