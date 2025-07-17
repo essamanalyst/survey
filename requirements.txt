@@ -1,5 +1,13 @@
 streamlit==1.32.0
 python-dotenv
-pyodbc  # إذا كنت تستخدم SQL Server
-psycopg2-binary  # إذا كنت تستخدم PostgreSQL
-pymysql  # إذا كنت تستخدم MySQL
+sqlite3
+pandas
+geocoder
+datetime
+typing
+json
+pathlib
+hashlib
+
+
+
