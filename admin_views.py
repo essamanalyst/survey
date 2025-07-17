@@ -1,8 +1,9 @@
 import streamlit as st
 import sqlite3
-from database import DATABASE_PATH, get_user_by_username, add_governorate_admin, get_health_admins, update_user, update_survey, get_governorates_list, add_user,  save_survey, delete_survey
+from database import DATABASE_PATH, get_audit_logs, get_response_info, get_response_details, update_response_detail, get_user_by_username, update_user_allowed_surveys, add_governorate_admin, get_health_admins, update_user, update_survey, get_governorates_list, add_user,  save_survey, delete_survey
 import json
 import pandas as pd
+from datetime import datetime
 
 def show_admin_dashboard():
     st.title("لوحة تحكم النظام")
@@ -12,7 +13,8 @@ def show_admin_dashboard():
         "إدارة المحافظات", 
         "إدارة الإدارات الصحية",     
         "إدارة الاستبيانات", 
-        "عرض البيانات"
+        "عرض البيانات",
+       
     ])
     
     with tab1:
@@ -29,7 +31,8 @@ def show_admin_dashboard():
     
     with tab5:
         view_data()
-
+    
+        
 def manage_users():
     st.header("إدارة المستخدمين")
     
@@ -82,70 +85,159 @@ def add_user_form():
     governorates = conn.execute("SELECT governorate_id, governorate_name FROM Governorates").fetchall()
     surveys = conn.execute("SELECT survey_id, survey_name FROM Surveys").fetchall()
     conn.close()
+
+    # تهيئة حالة الجلسة
+    if 'add_user_form_data' not in st.session_state:
+        st.session_state.add_user_form_data = {
+            'username': '',
+            'password': '',
+            'role': 'employee',
+            'governorate_id': None,
+            'admin_id': None,
+            'allowed_surveys': []
+        }
+
+    form = st.form(key="add_user_form", clear_on_submit=True)
     
-    with st.form("add_user_form"):
-        username = st.text_input("اسم المستخدم")
-        password = st.text_input("كلمة المرور", type="password")
-        role = st.selectbox("الدور", ["admin", "governorate_admin", "employee"])
-        
-        # عرض حقول إضافية حسب الدور المحدد
+    with form:
+        st.subheader("المعلومات الأساسية")
+        col1, col2 = st.columns(2)
+        with col1:
+            username = st.text_input("اسم المستخدم*", 
+                                   value=st.session_state.add_user_form_data['username'],
+                                   key="new_user_username")
+        with col2:
+            password = st.text_input("كلمة المرور*", 
+                                   type="password",
+                                   value=st.session_state.add_user_form_data['password'],
+                                   key="new_user_password")
+
+        role = st.selectbox("الدور*", 
+                          ["admin", "governorate_admin", "employee"],
+                          index=["admin", "governorate_admin", "employee"].index(
+                              st.session_state.add_user_form_data['role']),
+                          key="new_user_role")
+
+        # حقول مسؤول المحافظة
         if role == "governorate_admin":
-            selected_gov = st.selectbox(
-                "المحافظة",
-                options=[g[0] for g in governorates],
-                format_func=lambda x: next(g[1] for g in governorates if g[0] == x),
-                key="gov_select"
-            )
+            st.subheader("بيانات مسؤول المحافظة")
+            if governorates:
+                selected_gov = st.selectbox(
+                    "المحافظة*",
+                    options=[g[0] for g in governorates],
+                    index=[g[0] for g in governorates].index(
+                        st.session_state.add_user_form_data['governorate_id']) 
+                        if st.session_state.add_user_form_data['governorate_id'] in [g[0] for g in governorates] else 0,
+                    format_func=lambda x: next(g[1] for g in governorates if g[0] == x),
+                    key="gov_admin_select")
+                st.session_state.add_user_form_data['governorate_id'] = selected_gov
+            else:
+                st.warning("لا توجد محافظات متاحة. يرجى إضافة محافظة أولاً.")
+
+        # حقول الموظف
         elif role == "employee":
-            selected_gov = st.selectbox(
-                "المحافظة",
-                options=[g[0] for g in governorates],
-                format_func=lambda x: next(g[1] for g in governorates if g[0] == x),
-                key="emp_gov_select"
-            )
-            
-            conn = sqlite3.connect(DATABASE_PATH)
-            health_admins = conn.execute(
-                "SELECT admin_id, admin_name FROM HealthAdministrations WHERE governorate_id=?",
-                (selected_gov,)
-            ).fetchall()
-            conn.close()
-            
-            selected_admin = st.selectbox(
-                "الإدارة الصحية",
-                options=[a[0] for a in health_admins],
-                format_func=lambda x: next(a[1] for a in health_admins if a[0] == x),
-                key="admin_select"
-            )
-            
+            st.subheader("بيانات الموظف")
+            if governorates:
+                # اختيار المحافظة
+                selected_gov = st.selectbox(
+                    "المحافظة*",
+                    options=[g[0] for g in governorates],
+                    index=[g[0] for g in governorates].index(
+                        st.session_state.add_user_form_data['governorate_id']) 
+                        if st.session_state.add_user_form_data['governorate_id'] in [g[0] for g in governorates] else 0,
+                    format_func=lambda x: next(g[1] for g in governorates if g[0] == x),
+                    key="employee_gov_select")
+                st.session_state.add_user_form_data['governorate_id'] = selected_gov
+
+                # اختيار الإدارة الصحية
+                conn = sqlite3.connect(DATABASE_PATH)
+                health_admins = conn.execute(
+                    "SELECT admin_id, admin_name FROM HealthAdministrations WHERE governorate_id=?",
+                    (selected_gov,)
+                ).fetchall()
+                conn.close()
+
+                if health_admins:
+                    selected_admin = st.selectbox(
+                        "الإدارة الصحية*",
+                        options=[a[0] for a in health_admins],
+                        index=[a[0] for a in health_admins].index(
+                            st.session_state.add_user_form_data['admin_id']) 
+                            if st.session_state.add_user_form_data['admin_id'] in [a[0] for a in health_admins] else 0,
+                        format_func=lambda x: next(a[1] for a in health_admins if a[0] == x),
+                        key="employee_admin_select")
+                    st.session_state.add_user_form_data['admin_id'] = selected_admin
+                else:
+                    st.warning("لا توجد إدارات صحية في هذه المحافظة. يرجى إضافتها أولاً.")
+            else:
+                st.warning("لا توجد محافظات متاحة. يرجى إضافة محافظة أولاً.")
+
+        # قسم الاستبيانات المسموح بها (لغير الأدمن)
+        if role != "admin" and surveys:
+            st.subheader("الصلاحيات")
             selected_surveys = st.multiselect(
                 "الاستبيانات المسموح بها",
                 options=[s[0] for s in surveys],
+                default=st.session_state.add_user_form_data['allowed_surveys'],
                 format_func=lambda x: next(s[1] for s in surveys if s[0] == x),
-                key="surveys_select"
-            )
-        
-        submitted = st.form_submit_button("حفظ")
-        
-        if submitted:
-            if username and password:
+                key="allowed_surveys_select")
+            st.session_state.add_user_form_data['allowed_surveys'] = selected_surveys
+
+        # الأزرار الرئيسية
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            submit_button = st.form_submit_button("💾 حفظ المستخدم")
+        with col2:
+            clear_button = st.form_submit_button("🧹 تنظيف الحقول")
+
+        if submit_button:
+            # التحقق من صحة البيانات
+            if not username or not password:
+                st.error("يرجى إدخال اسم المستخدم وكلمة المرور")
+                return
+
+            if role == "governorate_admin" and not st.session_state.add_user_form_data['governorate_id']:
+                st.error("يرجى اختيار محافظة لمسؤول المحافظة")
+                return
+
+            if role == "employee" and not st.session_state.add_user_form_data['admin_id']:
+                st.error("يرجى اختيار إدارة صحية للموظف")
+                return
+
+            # حفظ المستخدم في قاعدة البيانات
+            if add_user(username, password, role, st.session_state.add_user_form_data['admin_id']):
+                user_id = get_user_by_username(username)['user_id']
+
+                # ربط مسؤول المحافظة بالمحافظة
                 if role == "governorate_admin":
-                    if add_user(username, password, role):
-                        add_governorate_admin(get_user_by_username(username)['user_id'], selected_gov)
-                        st.success("تمت إضافة مسؤول المحافظة بنجاح")
-                        st.rerun()
-                elif role == "employee":
-                    if add_user(username, password, role, selected_admin):
-                        # حفظ الاستبيانات المسموح بها للموظف
-                        pass  # يمكنك إضافة هذه الوظيفة
-                        st.success("تمت إضافة الموظف بنجاح")
-                        st.rerun()
-                else:  # admin role
-                    if add_user(username, password, role):
-                        st.success("تمت إضافة مسؤول النظام بنجاح")
-                        st.rerun()
-            else:
-                st.warning("يرجى إدخال اسم المستخدم وكلمة المرور")
+                    add_governorate_admin(user_id, st.session_state.add_user_form_data['governorate_id'])
+
+                # حفظ الاستبيانات المسموح بها
+                if role != "admin" and st.session_state.add_user_form_data['allowed_surveys']:
+                    update_user_allowed_surveys(user_id, st.session_state.add_user_form_data['allowed_surveys'])
+
+                st.success(f"تمت إضافة المستخدم {username} بنجاح")
+                st.session_state.add_user_form_data = {
+                    'username': '',
+                    'password': '',
+                    'role': 'employee',
+                    'governorate_id': None,
+                    'admin_id': None,
+                    'allowed_surveys': []
+                }
+                st.rerun()
+
+        if clear_button:
+            st.session_state.add_user_form_data = {
+                'username': '',
+                'password': '',
+                'role': 'employee',
+                'governorate_id': None,
+                'admin_id': None,
+                'allowed_surveys': []
+            }
+            st.rerun()
+                
 def edit_user_form(user_id):
     conn = sqlite3.connect(DATABASE_PATH)
     try:
@@ -161,6 +253,14 @@ def edit_user_form(user_id):
             return
             
         governorates = conn.execute("SELECT governorate_id, governorate_name FROM Governorates").fetchall()
+        surveys = conn.execute("SELECT survey_id, survey_name FROM Surveys").fetchall()
+        allowed_surveys = conn.execute('''
+            SELECT survey_id FROM UserSurveys WHERE user_id=?
+        ''', (user_id,)).fetchall()
+        allowed_surveys = [s[0] for s in allowed_surveys]
+        
+        # Filter allowed_surveys to only include surveys that exist in current surveys
+        valid_allowed_surveys = [s for s in allowed_surveys if s in [survey[0] for survey in surveys]]
         
         # الحصول على المحافظة الحالية للمستخدم (إذا كان مسؤول محافظة)
         current_gov = None
@@ -227,6 +327,16 @@ def edit_user_form(user_id):
                 key=f"admin_edit_{user_id}"
             )
         
+        # عرض اختيار الاستبيانات لغير الأدمن
+        if new_role != "admin" and surveys:
+            selected_surveys = st.multiselect(
+                "الاستبيانات المسموح بها",
+                options=[s[0] for s in surveys],
+                default=valid_allowed_surveys,  # Use the filtered list
+                format_func=lambda x: next(s[1] for s in surveys if s[0] == x),
+                key=f"surveys_edit_{user_id}"
+            )
+        
         col1, col2 = st.columns(2)
         with col1:
             if st.form_submit_button("حفظ التعديلات"):
@@ -242,11 +352,17 @@ def edit_user_form(user_id):
                             "INSERT INTO GovernorateAdmins (user_id, governorate_id) VALUES (?, ?)",
                             (user_id, selected_gov)
                         )
+                        # تحديث الاستبيانات المسموح بها
+                        if new_role != "admin":
+                            update_user_allowed_surveys(user_id, selected_surveys)
                         conn.commit()
                     finally:
                         conn.close()
                 else:
                     update_user(user_id, new_username, new_role, selected_admin if new_role == "employee" else None)
+                    # تحديث الاستبيانات المسموح بها
+                    if new_role != "admin":
+                        update_user_allowed_surveys(user_id, selected_surveys)
                 del st.session_state.editing_user
                 st.rerun()
         with col2:
@@ -311,7 +427,7 @@ def edit_survey(survey_id):
     # الحصول على بيانات الاستبيان
     survey = conn.execute("SELECT survey_name, is_active FROM Surveys WHERE survey_id=?", (survey_id,)).fetchone()
     
-    # الحصول على حقول الاستبيان
+    # الحصول على حقول الاستبيان الحالية
     fields = conn.execute('''
         SELECT field_id, field_label, field_type, field_options, is_required, field_order
         FROM Survey_Fields
@@ -321,6 +437,10 @@ def edit_survey(survey_id):
     
     conn.close()
     
+    # تهيئة حالة الجلسة للحقول الجديدة إذا لم تكن موجودة
+    if 'new_survey_fields' not in st.session_state:
+        st.session_state.new_survey_fields = []
+    
     with st.form(f"edit_survey_{survey_id}"):
         st.subheader("تعديل الاستبيان")
         
@@ -329,7 +449,7 @@ def edit_survey(survey_id):
         is_active = st.checkbox("نشط", value=bool(survey[1]))
         
         # عرض الحقول الحالية للتعديل
-        st.subheader("حقول الاستبيان")
+        st.subheader("الحقول الحالية")
         
         updated_fields = []
         for field in fields:
@@ -364,15 +484,66 @@ def edit_survey(survey_id):
                     'is_required': new_required
                 })
         
-        # أزرار الإدارة
-        col1, col2 = st.columns(2)
+        # إضافة حقول جديدة
+        st.subheader("إضافة حقول جديدة")
+        
+        for i, field in enumerate(st.session_state.new_survey_fields):
+            st.markdown(f"#### الحقل الجديد {i+1}")
+            col1, col2 = st.columns(2)
+            with col1:
+                field['field_label'] = st.text_input("تسمية الحقل", 
+                                                   value=field.get('field_label', ''),
+                                                   key=f"new_label_{i}")
+                field['field_type'] = st.selectbox(
+                    "نوع الحقل",
+                    ["text", "number", "dropdown", "checkbox", "date"],
+                    index=["text", "number", "dropdown", "checkbox", "date"].index(field.get('field_type', 'text')),
+                    key=f"new_type_{i}"
+                )
+            with col2:
+                field['is_required'] = st.checkbox("مطلوب", 
+                                                 value=field.get('is_required', False),
+                                                 key=f"new_required_{i}")
+                if field['field_type'] == 'dropdown':
+                    options = st.text_area(
+                        "خيارات القائمة المنسدلة (سطر لكل خيار)",
+                        value="\n".join(field.get('field_options', [])),
+                        key=f"new_options_{i}"
+                    )
+                    field['field_options'] = [opt.strip() for opt in options.split('\n') if opt.strip()]
+        
+        # أزرار إدارة الحقول الجديدة
+        col1, col2, col3 = st.columns(3)
         with col1:
-            if st.form_submit_button("حفظ التعديلات"):
-                update_survey(survey_id, new_name, is_active, updated_fields)
-                del st.session_state.editing_survey
+            if st.form_submit_button("➕ إضافة حقل جديد"):
+                st.session_state.new_survey_fields.append({
+                    'field_label': '',
+                    'field_type': 'text',
+                    'is_required': False,
+                    'field_options': []
+                })
                 st.rerun()
         with col2:
-            if st.form_submit_button("إلغاء"):
+            if st.form_submit_button("🗑️ حذف آخر حقل") and st.session_state.new_survey_fields:
+                st.session_state.new_survey_fields.pop()
+                st.rerun()
+        
+        # أزرار حفظ التعديلات
+        st.markdown("---")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.form_submit_button("💾 حفظ التعديلات"):
+                # دمج الحقول المعدلة مع الحقول الجديدة
+                all_fields = updated_fields + st.session_state.new_survey_fields
+                
+                if update_survey(survey_id, new_name, is_active, all_fields):
+                    st.success("تم تحديث الاستبيان بنجاح")
+                    st.session_state.new_survey_fields = []
+                    del st.session_state.editing_survey
+                    st.rerun()
+        with col2:
+            if st.form_submit_button("❌ إلغاء"):
+                st.session_state.new_survey_fields = []
                 del st.session_state.editing_survey
                 st.rerun()
 
@@ -380,8 +551,19 @@ def create_survey_form():
     if 'create_survey_fields' not in st.session_state:
         st.session_state.create_survey_fields = []
     
+    conn = sqlite3.connect(DATABASE_PATH)
+    governorates = conn.execute("SELECT governorate_id, governorate_name FROM Governorates").fetchall()
+    conn.close()
+    
     with st.form("create_survey_form"):
         survey_name = st.text_input("اسم الاستبيان")
+        
+        # اختيار المحافظات المسموحة لهذا الاستبيان
+        selected_governorates = st.multiselect(
+            "المحافظات المسموحة",
+            options=[g[0] for g in governorates],
+            format_func=lambda x: next(g[1] for g in governorates if g[0] == x)
+        )
         
         # إدارة الحقول
         st.subheader("حقول الاستبيان")
@@ -422,12 +604,11 @@ def create_survey_form():
                 st.session_state.create_survey_fields.pop()
         with col3:
             if st.form_submit_button("حفظ الاستبيان") and survey_name:
-                save_survey(survey_name, st.session_state.create_survey_fields)
+                save_survey(survey_name, st.session_state.create_survey_fields, selected_governorates)
                 st.session_state.create_survey_fields = []
                 st.rerun()
-
 def display_survey_data(survey_id):
-    """عرض بيانات استجابات الاستبيان"""
+    """عرض بيانات استجابات الاستبيان وتصدير شامل لجميع البيانات"""
     conn = sqlite3.connect(DATABASE_PATH)
     
     try:
@@ -456,17 +637,18 @@ def display_survey_data(survey_id):
 
         # الحصول على جميع الإجابات
         responses = conn.execute('''
-            SELECT r.response_id, u.username, h.admin_name, 
+            SELECT r.response_id, u.username, h.admin_name, g.governorate_name,
                    r.submission_date, r.is_completed
             FROM Responses r
             JOIN Users u ON r.user_id = u.user_id
             JOIN HealthAdministrations h ON r.region_id = h.admin_id
+            JOIN Governorates g ON h.governorate_id = g.governorate_id
             WHERE r.survey_id = ?
             ORDER BY r.submission_date DESC
         ''', (survey_id,)).fetchall()
 
         # عرض الإحصائيات
-        completed_responses = sum(1 for r in responses if r[4])
+        completed_responses = sum(1 for r in responses if r[5])
         regions_count = len(set(r[2] for r in responses))
 
         col1, col2, col3 = st.columns(3)
@@ -479,56 +661,160 @@ def display_survey_data(survey_id):
 
         # تحضير البيانات للعرض في DataFrame
         df = pd.DataFrame(
-            [(r[0], r[1], r[2], r[3], "مكتملة" if r[4] else "مسودة") for r in responses],
-            columns=["ID", "المستخدم", "المنطقة", "تاريخ التقديم", "الحالة"]
+            [(r[0], r[1], r[2], r[3], r[4], "مكتملة" if r[5] else "مسودة") for r in responses],
+            columns=["ID", "المستخدم", "الإدارة الصحية", "المحافظة", "تاريخ التقديم", "الحالة"]
         )
         
         # عرض البيانات
         st.dataframe(df)
-
-        # زر تصدير إلى Excel
-        if st.button("تصدير إلى Excel"):
+        
+        # زر تصدير شامل لجميع البيانات
+        if st.button("تصدير شامل لجميع البيانات إلى Excel", key=f"export_excel_{survey_id}"):
             # إنشاء اسم ملف مناسب
             import re
             from io import BytesIO
             
-            filename = re.sub(r'[^\w\-_]', '_', survey_name) + ".xlsx"
+            filename = re.sub(r'[^\w\-_]', '_', survey_name) + "_كامل_" + datetime.now().strftime("%Y%m%d_%H%M") + ".xlsx"
             
-            # إنشاء ملف Excel في الذاكرة
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False)
-            
+            # إنشاء ملف Excel متعدد الأوراق
+            with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+                # 1. ورقة ملخص الإجابات
+                df.to_excel(writer, sheet_name='ملخص_الإجابات', index=False)
+                
+                # 2. ورقة تفاصيل جميع الإجابات
+                all_details = []
+                for response in responses:
+                    details = conn.execute('''
+                        SELECT sf.field_label, rd.answer_value, 
+                               u.username as entered_by, 
+                               r.submission_date as entry_date,
+                               r.is_completed
+                        FROM Response_Details rd
+                        JOIN Survey_Fields sf ON rd.field_id = sf.field_id
+                        JOIN Responses r ON rd.response_id = r.response_id
+                        JOIN Users u ON r.user_id = u.user_id
+                        WHERE rd.response_id = ?
+                        ORDER BY sf.field_order
+                    ''', (response[0],)).fetchall()
+                    
+                    for detail in details:
+                        all_details.append({
+                            "ID الإجابة": response[0],
+                            "الحقل": detail[0],
+                            "القيمة": detail[1],
+                            "أدخلها": detail[2],
+                            "تاريخ الإدخال": detail[3],
+                            "حالة الإجابة": "مكتملة" if detail[4] else "مسودة"
+                        })
+                
+                if all_details:
+                    details_df = pd.DataFrame(all_details)
+                    details_df.to_excel(writer, sheet_name='تفاصيل_الإجابات', index=False)
+                
+                # 3. ورقة حقول الاستبيان
+                fields = conn.execute('''
+                    SELECT field_label, field_type, field_options, is_required
+                    FROM Survey_Fields
+                    WHERE survey_id = ?
+                    ORDER BY field_order
+                ''', (survey_id,)).fetchall()
+                
+                fields_df = pd.DataFrame(
+                    [(f[0], f[1], json.loads(f[2]) if f[2] else None, "نعم" if f[3] else "لا") for f in fields],
+                    columns=["اسم الحقل", "نوع الحقل", "الخيارات", "مطلوب"]
+                )
+                fields_df.to_excel(writer, sheet_name='حقول_الاستبيان', index=False)
+                
+                # 4. ورقة المستخدمين الذين أدخلوا بيانات
+                users_df = pd.DataFrame(
+                    [(r[1], r[2], r[3], r[4], "مكتملة" if r[5] else "مسودة") for r in responses],
+                    columns=["المستخدم", "الإدارة الصحية", "المحافظة", "تاريخ التقديم", "الحالة"]
+                )
+                users_df.drop_duplicates().to_excel(writer, sheet_name='المستخدمين', index=False)
+   
             # تقديم ملف للتنزيل
-            st.download_button(
-                label="تنزيل ملف Excel",
-                data=output.getvalue(),
-                file_name=filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-            st.success("تم إنشاء ملف Excel بنجاح")
+            with open(filename, "rb") as f:
+                st.download_button(
+                    label="تنزيل ملف Excel الكامل",
+                    data=f,
+                    file_name=filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"download_excel_{survey_id}"
+                )
+            st.success("تم إنشاء ملف Excel الشامل بنجاح")
 
         # عرض تفاصيل إجابة محددة
-        response_ids = [r[0] for r in responses]
         selected_response_id = st.selectbox(
-            "اختر إجابة لعرض تفاصيلها",
-            options=response_ids,
-            format_func=lambda x: f"إجابة #{x}"
+            "اختر إجابة لعرض وتعديل تفاصيلها",
+            options=[r[0] for r in responses],
+            format_func=lambda x: f"إجابة #{x}",
+            key=f"select_response_{survey_id}"
         )
 
         if selected_response_id:
-            details = conn.execute('''
-                SELECT sf.field_label, rd.answer_value
-                FROM Response_Details rd
-                JOIN Survey_Fields sf ON rd.field_id = sf.field_id
-                WHERE rd.response_id = ?
-                ORDER BY sf.field_order
-            ''', (selected_response_id,)).fetchall()
-
-            st.subheader("تفاصيل الإجابة المحددة")
-            for field, answer in details:
-                st.write(f"**{field}:** {answer if answer else 'غير مدخل'}")
-
+            response_info = get_response_info(selected_response_id)
+            if response_info:
+                st.subheader(f"تفاصيل الإجابة #{selected_response_id}")
+                st.markdown(f"""
+                **الاستبيان:** {response_info[1]}  
+                **المستخدم:** {response_info[2]}  
+                **الإدارة الصحية:** {response_info[3]}  
+                **المحافظة:** {response_info[4]}  
+                **تاريخ التقديم:** {response_info[5]}
+                """)
+                
+                details = get_response_details(selected_response_id)
+                updates = {}  # لتخزين التعديلات
+                
+                # استخدم نموذج لتجميع التعديلات
+                with st.form(key=f"edit_response_form_{selected_response_id}"):
+                    for detail in details:
+                        detail_id, field_id, label, field_type, options, answer = detail
+                        
+                        col1, col2 = st.columns([1, 3])
+                        with col1:
+                            st.markdown(f"**{label}**")
+                        with col2:
+                            if field_type == 'dropdown':
+                                options_list = json.loads(options) if options else []
+                                new_value = st.selectbox(
+                                    label,
+                                    options_list,
+                                    index=options_list.index(answer) if answer in options_list else 0,
+                                    key=f"dropdown_{detail_id}_{selected_response_id}"
+                                )
+                            else:
+                                new_value = st.text_input(
+                                    label,
+                                    value=answer,
+                                    key=f"input_{detail_id}_{selected_response_id}"
+                                )
+                            
+                            if new_value != answer:
+                                updates[detail_id] = new_value
+                    
+                    # زر حفظ التعديلات
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        save_clicked = st.form_submit_button("💾 حفظ جميع التعديلات")
+                        if save_clicked:
+                            if updates:
+                                success_count = 0
+                                for detail_id, new_value in updates.items():
+                                    if update_response_detail(detail_id, new_value):
+                                        success_count += 1
+                                
+                                if success_count == len(updates):
+                                    st.success("تم تحديث جميع التعديلات بنجاح")
+                                else:
+                                    st.error(f"تم تحديث {success_count} من أصل {len(updates)} تعديلات")
+                                st.rerun()
+                            else:
+                                st.info("لم تقم بإجراء أي تعديلات")
+                    with col2:
+                        cancel_clicked = st.form_submit_button("❌ إلغاء التعديلات")
+                        if cancel_clicked:
+                            st.rerun()
     except sqlite3.Error as e:
         st.error(f"حدث خطأ في قاعدة البيانات: {str(e)}")
     finally:
@@ -819,4 +1105,62 @@ def delete_health_admin(admin_id):
     finally:
         conn.close()
         
-     
+
+
+def export_to_excel(data):
+    """تصدير البيانات إلى ملف Excel"""
+    from io import BytesIO
+    import time
+    
+    # إنشاء DataFrame
+    df = pd.DataFrame(
+        [(log[0], log[1], log[2], log[3], log[4], 
+          log[5], log[6], log[7]) for log in data],
+        columns=["ID", "المستخدم", "الإجراء", "الجدول", "رقم السجل", 
+                 "القيمة القديمة", "القيمة الجديدة", "الوقت"]
+    )
+    
+    # إنشاء ملف Excel
+    output = BytesIO()
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    filename = f"audit_logs_export_{timestamp}.xlsx"
+    
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='سجل التعديلات')
+        
+        # إضافة ورقة ملخص
+        summary = df.groupby(['الجدول', 'الإجراء']).size().unstack(fill_value=0)
+        summary.to_excel(writer, sheet_name='ملخص الإجراءات')
+    
+    # تقديم ملف للتنزيل
+    st.download_button(
+        label="⬇️ تنزيل ملف Excel",
+        data=output.getvalue(),
+        file_name=filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    
+    st.success("تم إنشاء ملف التصدير بنجاح")
+
+def export_to_csv(data):
+    """تصدير البيانات إلى ملف CSV"""
+    import time
+    
+    df = pd.DataFrame(
+        [(log[0], log[1], log[2], log[3], log[4], 
+         log[5], log[6], log[7]) for log in data],
+        columns=["ID", "المستخدم", "الإجراء", "الجدول", "رقم السجل", 
+                 "القيمة القديمة", "القيمة الجديدة", "الوقت"]
+    )
+    
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    filename = f"audit_logs_export_{timestamp}.csv"
+    
+    st.download_button(
+        label="⬇️ تنزيل ملف CSV",
+        data=df.to_csv(index=False, encoding='utf-8-sig'),
+        file_name=filename,
+        mime="text/csv"
+    )
+    
+    st.success("تم إنشاء ملف التصدير بنجاح")
